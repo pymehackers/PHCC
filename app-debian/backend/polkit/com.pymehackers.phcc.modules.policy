@@ -1,0 +1,34 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE policyconfig PUBLIC
+  "-//freedesktop//DTD PolicyKit Policy Configuration 1.0//EN"
+  "http://www.freedesktop.org/standards/PolicyKit/1/policyconfig.dtd">
+<!--
+  Polkit policy of PYMEHackers Control Center (core).
+  It lets the indicator and the GNOME extension run the module catalog helper as root through
+  pkexec, after an administrator authentication. pkexec only accepts the exact path below.
+  The texts are translated here (xml:lang) because polkit cannot read the JSON language files.
+-->
+<policyconfig>
+  <vendor>PYMEHackers</vendor>
+  <vendor_url>https://pymehackers.com</vendor_url>
+  <icon_name>phcc</icon_name>
+
+  <action id="com.pymehackers.phcc.modules">
+    <description>Manage PYMEHackers Control Center modules</description>
+    <description xml:lang="en_GB">Manage PYMEHackers Control Center modules</description>
+    <description xml:lang="es_AR">Administrar los módulos de PYMEHackers Control Center</description>
+    <description xml:lang="es_ES">Gestionar los módulos de PYMEHackers Control Center</description>
+    <description xml:lang="es">Gestionar los módulos de PYMEHackers Control Center</description>
+    <message>Authentication is required to install, update or uninstall PYMEHackers Control Center modules</message>
+    <message xml:lang="en_GB">Authentication is required to install, update or uninstall PYMEHackers Control Center modules</message>
+    <message xml:lang="es_AR">Se necesita autenticación para instalar, actualizar o desinstalar módulos de PYMEHackers Control Center</message>
+    <message xml:lang="es_ES">Se necesita autenticación para instalar, actualizar o desinstalar módulos de PYMEHackers Control Center</message>
+    <message xml:lang="es">Se necesita autenticación para instalar, actualizar o desinstalar módulos de PYMEHackers Control Center</message>
+    <defaults>
+      <allow_any>auth_admin</allow_any>
+      <allow_inactive>auth_admin</allow_inactive>
+      <allow_active>auth_admin_keep</allow_active>
+    </defaults>
+    <annotate key="org.freedesktop.policykit.exec.path">/usr/libexec/phcc/phcc-modules</annotate>
+  </action>
+</policyconfig>

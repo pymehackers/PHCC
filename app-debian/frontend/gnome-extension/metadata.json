@@ -1,0 +1,8 @@
+{
+  "uuid": "phcc@pymehackers.com",
+  "name": "PYMEHackers Control Center",
+  "description": "PYMEHackers Control Center indicator for the GNOME Shell top bar. It opens the menu with the Systems and Cybersecurity sections and the installed modules, discovered dynamically from the /usr/share/pymehackers/modules registry, plus a catalog to install modules from the PHCC-modules repository. It is the native equivalent of the MATE AppIndicator, without depending on gnome-shell-extension-appindicator.",
+  "shell-version": ["45", "46", "47", "48", "49", "50"],
+  "url": "https://github.com/pymehackers/PHCC",
+  "version": 3
+}

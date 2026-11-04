@@ -1,0 +1,28 @@
+Package: phcc
+Version: 0.0.2
+Section: utils
+Priority: optional
+Architecture: amd64
+Maintainer: PYMEHackers <admin@pymehackers.com>
+Depends: libc6, libgtk-3-0, libayatana-appindicator3-1, libglib2.0-0, procps, util-linux, bash, curl, jq, ca-certificates, pkexec | policykit-1
+Recommends: libnotify-bin
+Homepage: https://github.com/pymehackers/PHCC
+Description: PYMEHackers Control Center - core (top bar indicator)
+ PYMEHackers Control Center is the core of the PYMEHackers platform. It places an icon in the top
+ bar of the desktop that opens the PYMEHackers Control Center menu with the "Systems" and
+ "Cybersecurity" sections. Each section lists the installed modules and their actions.
+ .
+ Module discovery is dynamic: each module (for example phcc-mod-port-sentinel) installs a
+ manifest in /usr/share/pymehackers/modules/<section>/ and appears in the menu automatically,
+ without reconfiguring the core.
+ .
+ The "Module catalog" menu lists the modules published in the PHCC-modules repository
+ (https://github.com/pymehackers/PHCC-modules) and installs, updates, reinstalls or uninstalls
+ them directly from there, after an administrator authentication (pkexec).
+ .
+ It ships two ways of showing the icon: an AppIndicator (phcc binary, for MATE, XFCE, Cinnamon,
+ KDE, Unity...) and a native GNOME Shell extension (phcc@pymehackers.com), so GNOME does not need
+ gnome-shell-extension-appindicator. It adds a "PYMEHackers Control Center" launcher to the
+ applications menu that shows the icon on any desktop; on GNOME the extension also enables itself
+ at login, and on the other desktops the AppIndicator starts with the session. The module
+ services keep working independently of the indicator.

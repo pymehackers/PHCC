@@ -1,0 +1,31 @@
+#!/bin/bash
+
+set -euo pipefail
+
+fCleanup() {
+  :
+}
+
+trap fCleanup EXIT
+
+fMain() {
+  # On a full purge, remove the registry directories ONLY if they are empty
+  # (a module that is still installed may have its manifest inside; it must not be deleted).
+  if [ "${1:-}" = "purge" ]; then
+    rmdir --ignore-fail-on-non-empty /usr/share/pymehackers/modules/sys 2>/dev/null || true
+    rmdir --ignore-fail-on-non-empty /usr/share/pymehackers/modules/cs 2>/dev/null || true
+    rmdir --ignore-fail-on-non-empty /usr/share/pymehackers/modules 2>/dev/null || true
+    rmdir --ignore-fail-on-non-empty /usr/share/pymehackers 2>/dev/null || true
+    rm -f /var/log/phcc-modules.log
+  fi
+
+  # Refresh the hicolor icon theme cache after removing the phcc icon.
+  if command -v gtk-update-icon-cache > /dev/null 2>&1; then
+    gtk-update-icon-cache -q -f -t /usr/share/icons/hicolor 2>/dev/null || true
+  fi
+}
+
+if ! fMain "$@"; then
+  echo "error in the post-removal of phcc"
+  exit 1
+fi

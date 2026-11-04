@@ -1,0 +1,216 @@
+#!/bin/bash
+
+set -euo pipefail
+
+# phcc-show: shows the PYMEHackers Control Center indicator according to the desktop.
+#   - GNOME Shell: enables the native extension "phcc@pymehackers.com" (the Shell paints the icon).
+#   - Others (MATE, XFCE, Cinnamon, KDE, Unity...): starts the AppIndicator binary /usr/bin/phcc.
+# It is idempotent: running it again never duplicates the icon.
+#
+# Usage:
+#   phcc-show            Manual mode (menu launcher): informs the user with notifications.
+#   phcc-show --quiet    Quiet mode (GNOME autostart): enables without notifications and, since the
+#                        Shell may take a while to register a freshly installed extension, retries.
+#
+# The notification texts come from the language files of the core (lang/<language>.json).
+
+cUuid="phcc@pymehackers.com"
+cBin="phcc"
+cLangDir="/usr/share/pymehackers/core/lang"
+aLanguages=(en-GB en-US es-AR es-ES)
+
+# Quiet mode (no graphical notifications). Enabled with --quiet.
+vQuiet=0
+
+# Language of the notifications (resolved in fMain).
+vLanguage="en-US"
+
+fCleanup() {
+  :
+}
+
+trap fCleanup EXIT
+
+# Maps a locale (es_AR.UTF-8, en, C...) to a supported language, or prints nothing.
+fNormalizeLanguage() {
+  local pValue="${1}"
+  local vTag=""
+  local vCandidate=""
+
+  vTag="$(printf '%s' "${pValue}" | sed 's/[.@].*$//; s/_/-/')"
+  for vCandidate in "${aLanguages[@]}"; do
+    if [ "${vTag,,}" = "${vCandidate,,}" ]; then
+      echo "${vCandidate}"
+      return 0
+    fi
+  done
+  case "${vTag,,}" in
+    en|en-*) echo "en-US" ;;
+    es|es-*) echo "es-ES" ;;
+    *)       echo "" ;;
+  esac
+}
+
+# Language of the session (LANGUAGE, LC_ALL, LC_MESSAGES, LANG), en-US by default.
+fSessionLanguage() {
+  local vCandidate=""
+  local vMatch=""
+  local aCandidates=()
+
+  IFS=':' read -r -a aCandidates < <(printf '%s\n' "${LANGUAGE:-}")
+  aCandidates+=("${LC_ALL:-}" "${LC_MESSAGES:-}" "${LANG:-}")
+  for vCandidate in "${aCandidates[@]}"; do
+    if [ -n "${vCandidate}" ]; then
+      vMatch="$(fNormalizeLanguage "${vCandidate}")"
+      if [ -n "${vMatch}" ]; then
+        echo "${vMatch}"
+        return 0
+      fi
+    fi
+  done
+  echo "en-US"
+}
+
+# Text of a key in the session language (fallback: en-US, then the key itself). The optional
+# second argument replaces the {0} placeholder.
+fT() {
+  local pKey="${1}"
+  local pArgument="${2:-}"
+  local vText=""
+  local vFile=""
+
+  for vFile in "${cLangDir}/${vLanguage}.json" "${cLangDir}/en-US.json"; do
+    if [ -z "${vText}" ] && [ -r "${vFile}" ] && command -v jq > /dev/null 2>&1; then
+      vText="$(jq -r --arg key "${pKey}" '.[$key] // empty' "${vFile}" 2> /dev/null || true)"
+    fi
+  done
+  if [ -z "${vText}" ]; then
+    vText="${pKey}"
+  fi
+  echo "${vText//\{0\}/${pArgument}}"
+}
+
+# Shows a message to the user. In quiet mode it only goes to the session log.
+fNotify() {
+  local pMsg="${1}"
+  local vTitle=""
+  vTitle="$(fT "app.title")"
+  echo "${vTitle}: ${pMsg}" >&2
+  if [ "${vQuiet}" -eq 0 ] && command -v notify-send > /dev/null 2>&1; then
+    notify-send -a "${vTitle}" -i phcc "${vTitle}" "${pMsg}" || true
+  fi
+}
+
+# Tells whether the current session is GNOME Shell (accepts "GNOME", "ubuntu:GNOME",
+# "GNOME-Classic"...).
+fIsGnome() {
+  case "${XDG_CURRENT_DESKTOP:-}" in
+    *GNOME*|*gnome*) return 0 ;;
+    *)              return 1 ;;
+  esac
+}
+
+# Enables the native extension on GNOME Shell. Returns 1 only on a real failure.
+fEnableOnGnome() {
+  local vKnown=0
+  local vAttempts=1
+
+  if ! command -v gnome-extensions > /dev/null 2>&1; then
+    fNotify "$(fT "show.no_gnome_extensions")"
+    return 1
+  fi
+
+  # Wait until the Shell knows the extension. After installing the package, the Shell does not
+  # register it until the session restarts; in quiet mode (autostart) it retries for a few seconds
+  # to give it time to register it during the first login.
+  if [ "${vQuiet}" -eq 1 ]; then
+    vAttempts=10
+  fi
+  while [ "${vAttempts}" -gt 0 ]; do
+    if gnome-extensions info "${cUuid}" > /dev/null 2>&1; then
+      vKnown=1
+      break
+    fi
+    vAttempts=$((vAttempts - 1))
+    if [ "${vAttempts}" -gt 0 ]; then
+      sleep 1
+    fi
+  done
+
+  if [ "${vKnown}" -eq 0 ]; then
+    fNotify "$(fT "show.relogin")"
+    return 0
+  fi
+
+  # If it is already enabled, there is nothing to do.
+  if gnome-extensions list --enabled 2>/dev/null | grep -qx "${cUuid}"; then
+    fNotify "$(fT "show.already_enabled")"
+    return 0
+  fi
+
+  if ! gnome-extensions enable "${cUuid}"; then
+    fNotify "$(fT "show.enable_failed")"
+    return 1
+  fi
+  fNotify "$(fT "show.enabled")"
+  return 0
+}
+
+# Starts the AppIndicator binary on desktops with a native tray. Returns 1 on a real failure.
+fLaunchBinary() {
+  if ! command -v "${cBin}" > /dev/null 2>&1; then
+    fNotify "$(fT "show.no_binary" "${cBin}")"
+    return 1
+  fi
+  if pgrep -u "$(id -u)" -x "${cBin}" > /dev/null 2>&1; then
+    fNotify "$(fT "show.already_running")"
+    return 0
+  fi
+  # setsid -f detaches the indicator from the launcher so it survives the end of this script.
+  if ! setsid -f "${cBin}" > /dev/null 2>&1; then
+    fNotify "$(fT "show.launch_failed" "${cBin}")"
+    return 1
+  fi
+  fNotify "$(fT "show.started")"
+  return 0
+}
+
+fMain() {
+  local vArg=""
+
+  vLanguage="$(fSessionLanguage)"
+
+  # Process the arguments.
+  for vArg in "$@"; do
+    case "${vArg}" in
+      --quiet) vQuiet=1 ;;
+      --help|-h)
+        echo "Usage: phcc-show [--quiet]"
+        return 0
+        ;;
+      *)
+        echo "Unknown argument: ${vArg}" >&2
+        echo "Usage: phcc-show [--quiet]" >&2
+        return 2
+        ;;
+    esac
+  done
+
+  # Each phase is checked explicitly: the "if ! fMain" pattern disables set -e inside fMain
+  # (Bash ignores -e in the operand of '!'), so a failure would not abort by itself.
+  if fIsGnome; then
+    if ! fEnableOnGnome; then
+      return 1
+    fi
+  else
+    if ! fLaunchBinary; then
+      return 1
+    fi
+  fi
+  return 0
+}
+
+if ! fMain "$@"; then
+  echo "$(fT "app.title"): $(fT "show.failed")" >&2
+  exit 1
+fi

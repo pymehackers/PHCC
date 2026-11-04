@@ -1,0 +1,21 @@
+[Desktop Entry]
+Type=Application
+Name=PYMEHackers Control Center
+Comment=PYMEHackers Control Center (Systems and Cybersecurity)
+Comment[en_GB]=PYMEHackers Control Center (Systems and Cybersecurity)
+Comment[es_AR]=PYMEHackers Control Center (Sistemas y Ciberseguridad)
+Comment[es_ES]=PYMEHackers Control Center (Sistemas y Ciberseguridad)
+Comment[es]=PYMEHackers Control Center (Sistemas y Ciberseguridad)
+Exec=phcc
+Icon=phcc
+Terminal=false
+Categories=System;Security;
+# Starts automatically at login. The user can disable it from "Startup Applications" (MATE) or the
+# equivalent tool of the desktop.
+X-MATE-Autostart-enabled=true
+# IMPORTANT: this binary is the AppIndicator path (MATE, XFCE, Cinnamon, KDE, Unity...).
+# On GNOME Shell the icon comes from the native extension "phcc@pymehackers.com", so GNOME is
+# EXCLUDED here to avoid showing the icon twice.
+NotShowIn=GNOME;
+# Short delay so the panel is ready before the icon is registered.
+X-MATE-Autostart-Delay=3

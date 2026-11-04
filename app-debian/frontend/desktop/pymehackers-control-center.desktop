@@ -1,0 +1,17 @@
+[Desktop Entry]
+Type=Application
+Name=PYMEHackers Control Center
+Comment=Shows the PYMEHackers Control Center icon in the desktop bar
+Comment[en_GB]=Shows the PYMEHackers Control Center icon in the desktop bar
+Comment[es_AR]=Muestra el ícono de PYMEHackers Control Center en la barra del escritorio
+Comment[es_ES]=Muestra el icono de PYMEHackers Control Center en la barra del escritorio
+Comment[es]=Muestra el icono de PYMEHackers Control Center en la barra del escritorio
+# Exec calls the phcc-show wrapper, which does the right thing for the desktop:
+#   - GNOME Shell: enables the native extension (the Shell paints the icon).
+#   - Others (MATE, XFCE, KDE, Cinnamon...): starts the AppIndicator binary phcc.
+Exec=phcc-show
+Icon=phcc
+Terminal=false
+Categories=System;Security;
+Keywords=pymehackers;phcc;systems;cybersecurity;security;modules;
+Keywords[es]=pymehackers;phcc;sistemas;ciberseguridad;seguridad;módulos;

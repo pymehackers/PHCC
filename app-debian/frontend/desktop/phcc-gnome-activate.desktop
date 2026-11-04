@@ -1,0 +1,23 @@
+[Desktop Entry]
+Type=Application
+Name=PYMEHackers Control Center (enable the GNOME icon)
+Name[en_GB]=PYMEHackers Control Center (enable the GNOME icon)
+Name[es_AR]=PYMEHackers Control Center (activar el ícono en GNOME)
+Name[es_ES]=PYMEHackers Control Center (activar el icono en GNOME)
+Name[es]=PYMEHackers Control Center (activar el icono en GNOME)
+Comment=Enables the icon extension when a GNOME Shell session starts
+Comment[en_GB]=Enables the icon extension when a GNOME Shell session starts
+Comment[es_AR]=Activa la extensión del ícono al iniciar sesión en GNOME Shell
+Comment[es_ES]=Activa la extensión del icono al iniciar sesión en GNOME Shell
+Comment[es]=Activa la extensión del icono al iniciar sesión en GNOME Shell
+# GNOME Shell ONLY autostart: at login it enables the native extension so the icon appears without
+# the user having to click anything ("install and done"). Other desktops ignore this file
+# (OnlyShowIn=GNOME) and get the icon from the binary autostart (phcc.desktop). The wrapper is
+# idempotent and retries while the Shell registers the extension during the first login after the
+# package is installed.
+Exec=phcc-show --quiet
+Icon=phcc
+Terminal=false
+OnlyShowIn=GNOME;
+X-GNOME-Autostart-enabled=true
+X-GNOME-Autostart-Delay=5

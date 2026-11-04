@@ -1,0 +1,55 @@
+#!/bin/bash
+
+set -euo pipefail
+
+fCleanup() {
+  :
+}
+
+trap fCleanup EXIT
+
+fMain() {
+  # Create the module registry directories (one subfolder per section).
+  # Modules drop their .desktop manifest here and the indicator discovers them.
+  if ! install -d -m 0755 /usr/share/pymehackers/modules/sys \
+    || ! install -d -m 0755 /usr/share/pymehackers/modules/cs; then
+    echo "Could not create the module registry directories."
+    return 1
+  fi
+
+  # Log of the module catalog operations (written by /usr/libexec/phcc/phcc-modules as root).
+  if [ ! -e /var/log/phcc-modules.log ]; then
+    if ! install -m 0640 /dev/null /var/log/phcc-modules.log; then
+      echo "Could not create /var/log/phcc-modules.log."
+      return 1
+    fi
+  fi
+
+  # Refresh the desktop application database: the applications menu (new launcher) and the
+  # autostart entries.
+  if command -v update-desktop-database > /dev/null 2>&1; then
+    update-desktop-database -q /usr/share/applications 2>/dev/null || true
+    update-desktop-database -q /etc/xdg/autostart 2>/dev/null || true
+  fi
+
+  # Refresh the hicolor icon theme cache so the phcc icon is available immediately
+  # (AppIndicator, launcher and GNOME top bar).
+  if command -v gtk-update-icon-cache > /dev/null 2>&1; then
+    gtk-update-icon-cache -q -f -t /usr/share/icons/hicolor 2>/dev/null || true
+  fi
+
+  # Enabling the GNOME extension is a per-user preference and cannot be done here (postinst runs
+  # as root, without a graphical session). It is not needed by hand any more: the
+  # "PYMEHackers Control Center" menu launcher and the GNOME autostart enable it by themselves.
+  echo "PYMEHackers Control Center installed."
+  echo "  - Applications menu: open \"PYMEHackers Control Center\" to show the icon."
+  echo "  - GNOME Shell: the icon enables itself at login (the first time it may be necessary to"
+  echo "    log out and back in so the Shell registers the extension)."
+  echo "  - MATE, XFCE, Cinnamon, KDE, Unity: the icon (AppIndicator) appears at login."
+  echo "  - Modules: open \"Module catalog\" in the menu to install them from PHCC-modules."
+}
+
+if ! fMain; then
+  echo "error in the post-installation of phcc"
+  exit 1
+fi

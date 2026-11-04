@@ -1,0 +1,410 @@
+#!/bin/bash
+
+set -euo pipefail
+
+# phcc-modules: module catalog helper of PYMEHackers Control Center (core) for Debian.
+#
+# Lists the modules published in the PHCC-modules repository and installs, updates, reinstalls or
+# uninstalls them by running the installer that each module publishes in that same repository.
+#
+# A module is any top-level folder of https://github.com/pymehackers/PHCC-modules (branch main)
+# whose name matches ^[a-z0-9][a-z0-9-]{0,62}$ and which contains a module.json file. Its Debian
+# installer is <id>/app-debian/build/install-update-reinstall-debian.sh.
+#
+# Usage:
+#   phcc-modules list [--lang LANG] [--refresh]
+#       One line per module with 7 tab-separated fields: id, section, version, installed version
+#       (empty if not installed), supported on this platform (0/1), name, description.
+#       The catalog is cached for 10 minutes; --refresh skips the cache.
+#   phcc-modules install ID      (root) installs the module
+#   phcc-modules update ID       (root) updates the module
+#   phcc-modules reinstall ID    (root) reinstalls the module
+#   phcc-modules uninstall ID    (root) uninstalls the module
+#
+# The frontends run "list" as the session user and the other commands through pkexec, which only
+# accepts this exact path (/usr/libexec/phcc/phcc-modules, see the polkit policy). The repository
+# is fixed on purpose: nobody can point the root operations to another source.
+
+cRepoOwner="pymehackers"
+cRepoName="PHCC-modules"
+cRepoRef="main"
+cApiUrl="https://api.github.com/repos/${cRepoOwner}/${cRepoName}/contents?ref=${cRepoRef}"
+cRawUrl="https://raw.githubusercontent.com/${cRepoOwner}/${cRepoName}/${cRepoRef}"
+cInstallerPath="app-debian/build/install-update-reinstall-debian.sh"
+cLogFile="/var/log/phcc-modules.log"
+cCacheTtlSeconds=600
+cIdPattern='^[a-z0-9][a-z0-9-]{0,62}$'
+cPackagePattern='^[a-z0-9][a-z0-9+.-]+$'
+aCurlOptions=(--fail --silent --show-error --location --proto '=https' --tlsv1.2 --max-time 60 --retry 2)
+aLanguages=(en-GB en-US es-AR es-ES)
+
+vTempDir=""
+
+fCleanup() {
+  if [ -n "${vTempDir}" ] && [ -d "${vTempDir}" ]; then
+    rm -rf "${vTempDir}"
+  fi
+}
+
+trap fCleanup EXIT
+
+fShowUsage() {
+  echo "Usage: phcc-modules list [--lang LANG] [--refresh]"
+  echo "       phcc-modules install|update|reinstall|uninstall ID"
+}
+
+# Current UTC date in the native format of the project (2026-10-29@13-59-59.723).
+fNow() {
+  date -u '+%Y-%m-%d@%H-%M-%S.%3N'
+}
+
+# Writes a line to stderr and, when running as root, to the log file.
+fLog() {
+  local pMessage="${1}"
+  echo "phcc-modules: ${pMessage}" >&2
+  if [ "$(id -u)" -eq 0 ]; then
+    echo "$(fNow) ${pMessage}" >> "${cLogFile}" 2> /dev/null || true
+  fi
+}
+
+# Maps a language tag or a locale (es_AR.UTF-8, en, C...) to a supported language.
+fNormalizeLanguage() {
+  local pValue="${1}"
+  local vTag=""
+  local vLanguage=""
+
+  vTag="$(printf '%s' "${pValue}" | sed 's/[.@].*$//; s/_/-/')"
+  for vLanguage in "${aLanguages[@]}"; do
+    if [ "${vTag,,}" = "${vLanguage,,}" ]; then
+      echo "${vLanguage}"
+      return 0
+    fi
+  done
+  case "${vTag,,}" in
+    en|en-*) echo "en-US" ;;
+    es|es-*) echo "es-ES" ;;
+    *)       echo "" ;;
+  esac
+}
+
+# Language of the session when --lang is not given (LANGUAGE, LC_ALL, LC_MESSAGES, LANG).
+fSessionLanguage() {
+  local vCandidate=""
+  local vLanguage=""
+  local aCandidates=()
+
+  IFS=':' read -r -a aCandidates < <(printf '%s\n' "${LANGUAGE:-}")
+  aCandidates+=("${LC_ALL:-}" "${LC_MESSAGES:-}" "${LANG:-}")
+  for vCandidate in "${aCandidates[@]}"; do
+    if [ -n "${vCandidate}" ]; then
+      vLanguage="$(fNormalizeLanguage "${vCandidate}")"
+      if [ -n "${vLanguage}" ]; then
+        echo "${vLanguage}"
+        return 0
+      fi
+    fi
+  done
+  echo "en-US"
+}
+
+# Platform identifier used in the "platforms" field of module.json.
+fPlatform() {
+  local vArch=""
+  if ! vArch="$(dpkg --print-architecture)"; then
+    return 1
+  fi
+  echo "debian-${vArch}"
+}
+
+# Version of an installed package, or nothing when it is not installed.
+fInstalledVersion() {
+  local pPackage="${1}"
+  local vStatus=""
+  vStatus="$(dpkg-query -W -f='${db:Status-Abbrev}|${Version}' "${pPackage}" 2> /dev/null || true)"
+  case "${vStatus}" in
+    ii*) echo "${vStatus#*|}" ;;
+    *)   echo "" ;;
+  esac
+}
+
+# Downloads the catalog (array of valid module.json objects) into the file pOutput.
+fDownloadCatalog() {
+  local pOutput="${1}"
+  local vWork=""
+  local vListing=""
+  local vName=""
+  local vManifest=""
+  local aManifests=()
+
+  if ! vWork="$(mktemp -d)"; then
+    fLog "could not create a temporary directory"
+    return 1
+  fi
+
+  vListing="${vWork}/listing.json"
+  if ! curl "${aCurlOptions[@]}" -H 'Accept: application/vnd.github+json' \
+    -o "${vListing}" "${cApiUrl}"; then
+    fLog "could not list the repository ${cRepoOwner}/${cRepoName}"
+    rm -rf "${vWork}"
+    return 1
+  fi
+
+  while IFS= read -r vName; do
+    if ! [[ "${vName}" =~ ${cIdPattern} ]]; then
+      continue
+    fi
+    vManifest="${vWork}/${vName}.json"
+    # A folder without module.json is not a module: a failed download simply skips it.
+    if ! curl "${aCurlOptions[@]}" -o "${vManifest}" "${cRawUrl}/${vName}/module.json" 2> /dev/null; then
+      continue
+    fi
+    if ! jq -e --arg id "${vName}" --arg packagePattern "${cPackagePattern}" '
+      (.id == $id)
+      and (.section == "sys" or .section == "cs")
+      and (.version | type == "string")
+      and (.package | type == "string") and (.package | test($packagePattern))
+      and ((.platforms // []) | type == "array")
+    ' "${vManifest}" > /dev/null 2>&1; then
+      fLog "ignoring ${vName}: its module.json is not valid"
+      continue
+    fi
+    aManifests+=("${vManifest}")
+  done < <(jq -r '.[] | select(.type == "dir") | .name' "${vListing}" 2> /dev/null || true)
+
+  if [ "${#aManifests[@]}" -eq 0 ]; then
+    if ! echo '[]' > "${pOutput}"; then
+      rm -rf "${vWork}"
+      return 1
+    fi
+  elif ! jq -s '.' "${aManifests[@]}" > "${pOutput}"; then
+    fLog "could not assemble the catalog"
+    rm -rf "${vWork}"
+    return 1
+  fi
+  rm -rf "${vWork}"
+}
+
+# Prints the path of an up-to-date catalog file. pRefresh=1 skips the cache.
+fCatalogFile() {
+  local pRefresh="${1}"
+  local vCacheDir=""
+  local vCacheFile=""
+  local vTemporary=""
+  local vAge=0
+
+  # root (pkexec) never uses a cache: every change works on a freshly downloaded catalog.
+  if [ "$(id -u)" -eq 0 ] || [ -z "${HOME:-}" ]; then
+    if ! fDownloadCatalog "${vTempDir}/catalog.json"; then
+      return 1
+    fi
+    echo "${vTempDir}/catalog.json"
+    return 0
+  fi
+
+  vCacheDir="${XDG_CACHE_HOME:-${HOME}/.cache}/phcc"
+  vCacheFile="${vCacheDir}/catalog.json"
+  if [ "${pRefresh}" -eq 0 ] && [ -s "${vCacheFile}" ]; then
+    vAge=$(( $(date +%s) - $(stat -c %Y "${vCacheFile}") ))
+    if [ "${vAge}" -ge 0 ] && [ "${vAge}" -lt "${cCacheTtlSeconds}" ]; then
+      echo "${vCacheFile}"
+      return 0
+    fi
+  fi
+
+  if ! mkdir -p "${vCacheDir}"; then
+    fLog "could not create the cache directory ${vCacheDir}"
+    return 1
+  fi
+  if ! vTemporary="$(mktemp "${vCacheDir}/.catalog.XXXXXX")"; then
+    return 1
+  fi
+  if ! fDownloadCatalog "${vTemporary}" || ! mv -f "${vTemporary}" "${vCacheFile}"; then
+    rm -f "${vTemporary}"
+    return 1
+  fi
+  echo "${vCacheFile}"
+}
+
+# "list" command.
+fList() {
+  local pLanguage="${1}"
+  local pRefresh="${2}"
+  local vCatalog=""
+  local vPlatform=""
+  local vId=""
+  local vSection=""
+  local vVersion=""
+  local vPackage=""
+  local vSupported=""
+  local vName=""
+  local vDescription=""
+
+  if ! vPlatform="$(fPlatform)"; then
+    fLog "could not determine the Debian architecture"
+    return 1
+  fi
+  if ! vCatalog="$(fCatalogFile "${pRefresh}")"; then
+    return 1
+  fi
+
+  # Fields are joined with the ASCII unit separator (0x1f), which never appears in the cleaned
+  # texts, so empty fields survive "read" (tabs would collapse them).
+  while IFS=$'\x1f' read -r vId vSection vVersion vPackage vSupported vName vDescription; do
+    printf '%s\t%s\t%s\t%s\t%s\t%s\t%s\n' "${vId}" "${vSection}" "${vVersion}" \
+      "$(fInstalledVersion "${vPackage}")" "${vSupported}" "${vName}" "${vDescription}"
+  done < <(jq -r --arg lang "${pLanguage}" --arg platform "${vPlatform}" '
+    def clean: tostring | gsub("[\t\n\r\u001f]"; " ");
+    .[] | [
+      .id, .section, .version, .package,
+      (if ((.platforms // []) | index($platform)) != null then "1" else "0" end),
+      ((.name // {})[$lang] // (.name // {})["en-US"] // .id),
+      ((.description // {})[$lang] // (.description // {})["en-US"] // "")
+    ] | map(clean) | join("\u001f")
+  ' "${vCatalog}")
+}
+
+# install, update, reinstall and uninstall commands (root).
+fRunOperation() {
+  local pAction="${1}"
+  local pId="${2}"
+  local vCatalog=""
+  local vPlatform=""
+  local vSupported=""
+  local vInstaller=""
+  local vStatus=0
+  local aArguments=()
+
+  if [ "$(id -u)" -ne 0 ]; then
+    echo "phcc-modules: '${pAction}' must run as root (the frontends use pkexec)." >&2
+    return 1
+  fi
+  if ! [[ "${pId}" =~ ${cIdPattern} ]]; then
+    fLog "invalid module identifier: ${pId}"
+    return 1
+  fi
+  case "${pAction}" in
+    install|update) aArguments=() ;;
+    reinstall)      aArguments=(--reinstall) ;;
+    uninstall)      aArguments=(--uninstall) ;;
+    *)
+      fLog "unknown operation: ${pAction}"
+      return 1
+      ;;
+  esac
+
+  if [ ! -e "${cLogFile}" ]; then
+    install -m 0640 /dev/null "${cLogFile}" 2> /dev/null || true
+  fi
+  fLog "${pAction} ${pId}: started"
+
+  if ! vPlatform="$(fPlatform)"; then
+    fLog "${pAction} ${pId}: could not determine the Debian architecture"
+    return 1
+  fi
+  if ! vCatalog="$(fCatalogFile 1)"; then
+    fLog "${pAction} ${pId}: the catalog could not be downloaded"
+    return 1
+  fi
+  if ! vSupported="$(jq -r --arg id "${pId}" --arg platform "${vPlatform}" '
+    [.[] | select(.id == $id)] | if length == 0 then "missing"
+    elif ((.[0].platforms // []) | index($platform)) != null then "1" else "0" end
+  ' "${vCatalog}")"; then
+    fLog "${pAction} ${pId}: the catalog could not be read"
+    return 1
+  fi
+  if [ "${vSupported}" = "missing" ]; then
+    fLog "${pAction} ${pId}: the module is not in the catalog"
+    return 1
+  fi
+  if [ "${vSupported}" != "1" ]; then
+    fLog "${pAction} ${pId}: the module is not available for ${vPlatform}"
+    return 1
+  fi
+
+  vInstaller="${vTempDir}/installer.sh"
+  if ! curl "${aCurlOptions[@]}" -o "${vInstaller}" "${cRawUrl}/${pId}/${cInstallerPath}"; then
+    fLog "${pAction} ${pId}: could not download ${cInstallerPath}"
+    return 1
+  fi
+  if [ "$(head -c 2 "${vInstaller}")" != "#!" ]; then
+    fLog "${pAction} ${pId}: the downloaded installer is not a script"
+    return 1
+  fi
+
+  # The installer of the module does the real work; its output goes to the log.
+  vStatus=0
+  bash "${vInstaller}" "${aArguments[@]}" < /dev/null >> "${cLogFile}" 2>&1 || vStatus=$?
+  if [ "${vStatus}" -ne 0 ]; then
+    fLog "${pAction} ${pId}: the installer failed with code ${vStatus}"
+    return 1
+  fi
+  fLog "${pAction} ${pId}: completed"
+}
+
+fMain() {
+  local vCommand="${1:-}"
+  local vLanguage=""
+  local vRefresh=0
+
+  if ! vTempDir="$(mktemp -d)"; then
+    echo "phcc-modules: could not create a temporary directory." >&2
+    return 1
+  fi
+  if ! command -v curl > /dev/null 2>&1 || ! command -v jq > /dev/null 2>&1; then
+    echo "phcc-modules: curl and jq are required." >&2
+    return 1
+  fi
+
+  case "${vCommand}" in
+    list)
+      shift
+      while [ "$#" -gt 0 ]; do
+        case "${1}" in
+          --lang)
+            if [ "$#" -lt 2 ]; then
+              fShowUsage >&2
+              return 2
+            fi
+            vLanguage="$(fNormalizeLanguage "${2}")"
+            shift 2
+            ;;
+          --refresh)
+            vRefresh=1
+            shift
+            ;;
+          *)
+            fShowUsage >&2
+            return 2
+            ;;
+        esac
+      done
+      if [ -z "${vLanguage}" ]; then
+        vLanguage="$(fSessionLanguage)"
+      fi
+      if ! fList "${vLanguage}" "${vRefresh}"; then
+        return 1
+      fi
+      ;;
+    install|update|reinstall|uninstall)
+      if [ "$#" -ne 2 ]; then
+        fShowUsage >&2
+        return 2
+      fi
+      if ! fRunOperation "${vCommand}" "${2}"; then
+        return 1
+      fi
+      ;;
+    -h|--help)
+      fShowUsage
+      ;;
+    *)
+      fShowUsage >&2
+      return 2
+      ;;
+  esac
+}
+
+if ! fMain "$@"; then
+  echo "phcc-modules: the command failed." >&2
+  exit 1
+fi
